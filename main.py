@@ -390,7 +390,7 @@ class FixedStones:
             count -= 1
 
         return count
-    
+
 class AdvancedEvaluator():
     def __init__(self, turn, currentOpenness = 0):
         self.turn = turn
