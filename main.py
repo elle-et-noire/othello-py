@@ -1,5 +1,6 @@
 from enum import Enum
 import copy
+import time
 
 class Stone(Enum):
     EMPTY = 0
@@ -8,7 +9,22 @@ class Stone(Enum):
     WALL = 334
 
     def flip(self):
+        if self.value == self.WALL:
+            print("wall cannot be flipped.")
         return Stone(self.value * -1)
+    
+    @staticmethod
+    def values():
+        return [Stone.EMPTY, Stone.BLACK, Stone.WHITE, Stone.WALL]
+    
+    def ordinal(self):
+        if self.value == self.EMPTY.value:
+            return 0
+        if self.value == self.BLACK.value:
+            return 1
+        if self.value == self.WHITE.value:
+            return 2
+        return 3
 
 class Position():
     def __init__(self, x, y):
@@ -16,9 +32,7 @@ class Position():
         self.y = y
 
     def equals(self, p):
-        if self.x == p.x and self.y == p.y:
-            return True
-        return False
+        return self.x == p.x and self.y == p.y
 
 class Board():
     WIDTH = 8
@@ -135,6 +149,11 @@ class Board():
     def show(self):
         print(self.str())
 
+    def getHorizontal(self, y):
+        return [self.get(i + 1, y) for i in range(self.WIDTH)]
+    
+    def getVertical(self, x):
+        return [self.get(x, i + 1) for i in range(self.HEIGHT)]
 
 class Turn(Enum):
     FIRST = -1
@@ -146,8 +165,15 @@ class Turn(Enum):
     def stone(self):
         #先手は黒、後手は白
         return Stone(self.value)
+    
+class Player():
+    def __init__(self, turn):
+        self.turn = turn
 
-class HumanPlayer():
+    def getTurn(self):
+        return self.turn
+
+class HumanPlayer(Player):
     def __init__(self, turn):
         self.turn = turn
 
@@ -161,8 +187,16 @@ class HumanPlayer():
 
             return Position(x, y)
 
+class AbstractAIPlayer(Player):
+    def __init__(self, turn, maxDepth):
+        self.turn = turn
+        self.maxDepth = maxDepth
+        
+    def play(self, board):
+        return self.makeSearcher().eval(board, self.maxDepth, self.turn,
+                    self.makeEvaluator()).getPosition()
 
-class SimpleAIPlayer():
+class BoardScoreEvaluator():
     EVAL_VALUES = [
         [100, -50, 35, 30, 30, 35, -50, 100],
         [-50, -70, 10, 15, 15, 10, -70, -50],
@@ -173,7 +207,64 @@ class SimpleAIPlayer():
         [-50, -70, 10, 15, 15, 10, -70, -50],
         [100, -50, 35, 30, 30, 35, -50, 100]
     ]
+    
+    def __init__(self, turn, score=0):
+        self.turn = turn
+        self.currentScore = score
 
+    def clone(self):
+        return BoardScoreEvaluator(self.turn, self.currentScore)
+    
+    def willPut(self, board, x, y, stone):
+        if stone == self.turn.stone():
+            self.currentScore += self.EVAL_VALUES[y - 1][x - 1]
+        else:
+            self.currentScore -= self.EVAL_VALUES[y - 1][x - 1]
+
+    def score(self, board, currentTurn):
+        if currentTurn == self.turn:
+            return self.currentScore
+        else:
+            return -self.currentScore
+        
+class NegaMaxSearcher():
+    def eval(self, board, restDepth, currentTurn, evaluator):
+        if restDepth == 0:
+            return EvalResult(evaluator.score(board, currentTurn), None)
+        
+        puttablePositions = board.findPuttableHands(currentTurn.stone())
+        if len(puttablePositions) == 0:
+            score = -self.eval(board, restDepth - 1, currentTurn.flip(), evaluator).getScore()
+            return EvalResult(score, None)
+        
+        maxScore = -float('inf')
+        selectedPosition = None
+
+        for p in puttablePositions:
+            b = board.clone()
+            e = evaluator.clone()
+            
+            e.willPut(b, p.x, p.y, currentTurn.stone())
+            b.put(p.x, p.y, currentTurn.stone())
+
+            score = -self.eval(b, restDepth - 1, currentTurn.flip(), e).getScore()
+            if maxScore < score:
+                maxScore = score
+                selectedPosition = p
+
+        return EvalResult(maxScore, selectedPosition)
+    
+class NegaScoutBoardScoreAIPlayer(AbstractAIPlayer):
+    def __init__(self, turn, maxDepth):
+        super().__init__(turn, maxDepth)
+
+    def makeEvaluator(self):
+        return BoardScoreEvaluator(self.turn)
+    
+    def makeSearcher(self):
+        return NegaScoutSearcher()
+
+class SimpleAIPlayer():
     def __init__(self, turn):
         self.turn = turn
 
@@ -182,57 +273,175 @@ class SimpleAIPlayer():
         maxVal = -float('inf')
 
         for p in board.findPuttableHands(self.turn.stone()):
-            if maxVal < self.EVAL_VALUES[p.y - 1][p.x - 1]:
-                maxVal = self.EVAL_VALUES[p.y - 1][p.x - 1]
+            if maxVal < BoardScoreEvaluator.EVAL_VALUES[p.y - 1][p.x - 1]:
+                maxVal = BoardScoreEvaluator.EVAL_VALUES[p.y - 1][p.x - 1]
                 pos = p
 
-        return p
+        return pos
 
 class EvalResult():
     def __init__(self, score, position):
         self.score = score
         self.position = position
 
-class MinMaxAIPlayer(SimpleAIPlayer):
-    def __init__(self, turn, maxDepth):
-        super().__init__(turn)
-        self.maxDepth = maxDepth
+    def getScore(self):
+        return self.score
+    
+    def getPosition(self):
+        return self.position
 
-    def play(self, board):
-        return self.eval(board, self.maxDepth, self.turn, 0).position
+class FixedStones:
+    @staticmethod
+    def fromInt(idx):
+        board = Board()
+        for x in range(8, 0, -1):
+            board.set(x, 1, Stone.values()[idx % 3])
+            idx //= 3
 
-    def eval(self, board, restDepth, currentTurn, scoreSum):
-        if restDepth == 0:
-            return EvalResult(scoreSum if currentTurn == self.turn else -scoreSum, None)
+        return board
 
-        puttables = board.findPuttableHands(currentTurn.stone())
+    @staticmethod
+    def toInt(stones):
+        result = 0
+        for s in stones:
+            result = result * 3 + s.ordinal()
 
-        if len(puttables) == 0:
-            score = -self.eval(board, restDepth - 1, currentTurn.flip(), scoreSum).score
-            return EvalResult(score, None)
+        return result
 
-        maxScore = -float('inf')
-        selected = None
+    @staticmethod
+    def calculateIter(ith, visited):
+        if visited[ith] >= 0:
+            return visited[ith]
 
-        for p in puttables:
+        board = FixedStones.fromInt(ith)
+        foundEmpty = False
+        result = 100
+
+        for x in range(1, Board.WIDTH+1):
+            if board.get(x, 1) != Stone.EMPTY:
+                continue
+
+            foundEmpty = True
+
             b = board.clone()
-            b.put(p.x, p.y, currentTurn.stone())
-            scoreDiff = (1 if currentTurn == self.turn else -1) * self.EVAL_VALUES[p.y - 1][p.x - 1]
-            score = -self.eval(b, restDepth - 1, currentTurn.flip(), scoreSum + scoreDiff).score
-            if maxScore < score:
-                maxScore = score
-                selected = p
-        return EvalResult(maxScore, selected)
+            b.put(x, 1, Stone.BLACK)
+            result = min(result, FixedStones.calculateIter(FixedStones.toInt(b.getHorizontal(1)), visited))
 
+            b = board.clone()
+            b.put(x, 1, Stone.WHITE)
+            result = min(result, FixedStones.calculateIter(FixedStones.toInt(b.getHorizontal(1)), visited))
 
-class AlphaBetaMinMaxAIPlayer(SimpleAIPlayer):
+        if foundEmpty:
+            visited[ith] = result
+            return result
+
+        numBlackStone = 0
+        for i in range(1, Board.WIDTH+1):
+            if board.get(i, 1) == Stone.BLACK:
+                numBlackStone += 1
+
+        visited[ith] = numBlackStone
+        return numBlackStone
+    
+    @staticmethod
+    def calculate():
+        result = [0 for _ in range(6561)]
+        for i in range(6561):
+            result[i] = FixedStones.calculateIter(i, result)
+        return result
+
+    fixedStone = []
+    initialized = False
+
+    @staticmethod
+    def init():
+        if not FixedStones.initialized:
+            FixedStones.fixedStone = FixedStones.calculate()
+            FixedStones.initialized = True
+
+    @staticmethod
+    def getNumFixedStones(board, stone):
+        upper = board.getHorizontal(1)
+        lower = board.getHorizontal(Board.HEIGHT)
+        left = board.getVertical(1)
+        right = board.getVertical(Board.WIDTH)
+
+        if stone != Stone.BLACK:
+            for i in range(8):
+                upper[i] = upper[i].flip()
+                lower[i] = lower[i].flip()
+                left[i] = left[i].flip()
+                right[i] = right[i].flip()
+
+        count = 0
+        count += FixedStones.fixedStone[FixedStones.toInt(upper)]
+
+        if board.get(1, 1) == stone:
+            count -= 1
+        if board.get(1, Board.HEIGHT) == stone:
+            count -= 1
+        if board.get(Board.WIDTH, 1) == stone:
+            count -= 1
+        if board.get(Board.WIDTH, Board.HEIGHT) == stone:
+            count -= 1
+
+        return count
+    
+class AdvancedEvaluator():
+    def __init__(self, turn, currentOpenness = 0):
+        self.turn = turn
+        self.currentOpenness = currentOpenness
+        FixedStones.init()
+
+    def clone(self):
+        return AdvancedEvaluator(self.turn, self.currentOpenness)
+
+    def willPut(self, board, x, y, stone):
+        for i in range(len(Board.DX)):
+            dx = Board.DX[i]
+            dy = Board.DY[i]
+            count = board.countFlippable(x, y, stone, dx, dy)
+            # 開放度を計算して足し算
+            for j in range(1, count+1):
+                if self.turn.stone() == stone:
+                    self.currentOpenness += self.countOpenness(board, x + dx * j, y + dy * j)
+                else:
+                    self.currentOpenness -= self.countOpenness(board, x + dx * j, y + dy * j)
+
+    def countOpenness(self, board, x, y):
+        count = 0
+        for i in range(len(Board.DX)):
+            dx = Board.DX[i]
+            dy = Board.DY[i]
+            if board.get(x + dx, y + dy) == Stone.EMPTY:
+                count += 1
+        return count
+
+    def score(self, board, currentTurn):
+        # 開放度を加点
+        v = -self.currentOpenness * 3
+        # 自分の確定石を加点
+        v += FixedStones.getNumFixedStones(board, self.turn.stone()) * 20
+        # 相手の確定石を減点
+        v -= FixedStones.getNumFixedStones(board, self.turn.flip().stone()) * 20
+        # 置ける箇所を加点
+        v += len(board.findPuttableHands(self.turn.stone()))
+        # 相手の置ける箇所を減点
+        v -= len(board.findPuttableHands(self.turn.flip().stone()))
+
+        return v if currentTurn == self.turn else -v
+
+class NegaMaxAdvancedAIPlayer(AbstractAIPlayer):
     def __init__(self, turn, maxDepth):
-        super().__init__(turn)
-        self.maxDepth = maxDepth
+        super().__init__(turn, maxDepth)
 
-    def play(self, board):
-        return self.eval(board, self.maxDepth, self.turn, 0, -float('inf'), float('inf')).position
-
+    def makeEvaluator(self):
+        return AdvancedEvaluator(self.turn)
+    
+    def makeSearcher(self):
+        return NegaMaxSearcher()
+    
+class AlphaBetaSearcher():
     def eval(self, board, restDepth, currentTurn, scoreSum, alpha, beta):
         if restDepth == 0:
             return EvalResult(scoreSum if currentTurn == self.turn else -scoreSum, None)
@@ -260,133 +469,79 @@ class AlphaBetaMinMaxAIPlayer(SimpleAIPlayer):
 
         return EvalResult(maxScore, selected)
     
-class FixedStones():
-    def __init__(self):
-        self.fixedStone = self.calculate()
+class NegaScoutSearcher():
+    def eval(self, board, restDepth, currentTurn, evaluator, alpha=-float('inf'), beta=float('inf')):
+        if restDepth == 0:
+            return EvalResult(evaluator.score(board, currentTurn), None)
+        
+        puttablePositions = board.findPuttableHands(currentTurn.stone())
 
-    def getNumFixedStones(self, board, stone):
-        upper = []
-        lower = []
-        left = []
-        right = []
+        if len(puttablePositions) == 0:
+            score = -self.eval(board, restDepth - 1, currentTurn.flip(), evaluator, -beta, -alpha).getScore()
+            return EvalResult(score, None)
+        
+        maxScore = -float('inf')
+        selectedPosition = None
 
-        for i in range(1,9):
-            upper.append(board.get(i, 1))
-            lower.append(board.get(i, Board.HEIGHT))
-            left.append(board.get(1, i))
-            right.append(board.get(Board.WIDTH, i))
-
-        if stone != Board.BLACK:
-            for i in range(8):
-                upper[i] = upper[i].flip()
-                lower[i] = lower[i].flip()
-                left[i] = left[i].flip()
-                right[i] = right[i].flip()
-
-        if board.get(1, 1) == stone:
-            count -= 1
-        if board.get(1, Board.HEIGHT) == stone:
-            count -= 1
-        if board.get(Board.WIDTH, 1) == stone:
-            count -= 1
-        if board.get(Board.WIDTH, Board.HEIGHT) == stone:
-            count -= 1
-
-        return count
-
-    def calculate(self):
-        return [self.calculateIter(self.fromInt(i), 1) for i in range(3^8+1)]
-
-    def calculateIter(self, ith, visited):
-        if visited[ith] >= 0:
-            return visited[ith]
-
-        board = self.fromInt(ith)
-        foundEmpty = False
-        result = 100
-
-        for x in range(1, Board.WIDTH+1):
-            if board.get(x, 1) != Stone.EMPTY:
-                continue
-
-            foundEmpty = True
-
+        for p in puttablePositions:
             b = board.clone()
-            b.put(x, 1, Stone.BLACK)
-            result = min(result, self.calculateIter(self.toInt(b.getHorizontal(1)), visited))
+            e = evaluator.clone()
 
-            b = board.clone()
-            b.put(x, 1, Stone.WHITE)
-            result = min(result, self.calculateIter(self.toInt(b.getHorisontal(1)), visited))
+            e.willPut(b, p.x, p.y, currentTurn.stone())
+            b.put(p.x, p.y, currentTurn.stone())
 
-        if foundEmpty:
-            visited[ith] = result
-            return result
+            a = max(alpha, maxScore)
+            score = -self.eval(b, restDepth - 1, currentTurn.flip(), e, -a - 1, -a).getScore()
+            if (a < score < beta):
+                e = evaluator.clone()
+                e.willPut(board, p.x, p.y, currentTurn.stone())
+                score = -self.eval(b, restDepth - 1, currentTurn.flip(), e, -beta, -score).getScore()
 
-        numBlackStone = 0
-        for i in range(1, Board.WIDTH+1):
-            if board.get(i, 1) == Stone.BLACK:
-                numBlackStone += 1
-
-        visited[ith] = numBlackStone
-        return numBlackStone
-
-    def fromInt(self, idx):
-        board = Board()
-        for x in range(8, 0, -1):
-            board.set(x, 1, Stone.values()[idx % 3])
-            idx /= 3
-
-        return board
-
-    def toInt(self, stones):
-        result = 0
-        for i in range(len(stones)):
-            result = result * 3 + stones[i].ordinal()
-
-        return result
+            if maxScore < score:
+                maxScore = score
+                selectedPosition = p
+            
+            # beta cut
+            if maxScore >= beta:
+                return EvalResult(score, p)
+            
+        return EvalResult(maxScore, selectedPosition)
     
-class AdvancedEvaluator():
-    def __init__(self, turn, currentOpenness):
-        self.turn = turn
-        self.currentOpenness = currentOpenness
+class NegaScoutAIPlayer(AbstractAIPlayer):
+    def __init__(self, turn, maxDepth):
+        super().__init__(turn, maxDepth)
 
-    def willPut(self, board, x, y, stone):
-        for i in range(len(Board.DX)):
-            dx = Board.DX[i]
-            dy = Board.DY[i]
-            count = board.countFlippable(x, y, stone, dx, dy)
-            for j in range(1, count+1):
-                if self.turn.stone() == stone:
-                    self.currentOpenness += self.countOpenness(board, x + dx * j, y + dy * j)
-                else:
-                    self.currentOpenness += self.countOpenness(board, x + dx * j, y + dy * j)
+    def makeEvaluator(self):
+        return AdvancedEvaluator(self.turn)
+    
+    def makeSearcher(self):
+        return NegaScoutSearcher()
+    
+# class PerfectPlayWrapperPlayer(Player):
+#     def __init__(self, originalPlayer, completeReadingThreshold):
+#         self.turn = originalPlayer.getTurn()
+#         self.originalPlayer = originalPlayer
+#         self.completeReadingThreshold = completeReadingThreshold
 
-    def countOpenness(self, board, x, y):
-        count = 0
-        for i in range(len(Board.DX)):
-            dx = Board.DX[i]
-            dy = Board.DY[i]
-            if board.get(x + dx, y + dy) == Stone.EMPTY:
-                count += 1
-        return count
+#     def play(self, board):
+#         restHand = 64 - board.countStones()
+#         print(restHand)
 
-    def score(self, board, currentTurn):
-        v = -self.currentOpenness * 3
-        v += FixedStones.getNumFixedStones(board, self.turn.stone()) * 20
-        v -= FixedStones.getNumFixedStones(board, self.turn.flip().stone()) * 20
-        v += len(board.findPuttableHands(self.turn.stone()))
-        v -= len(board.findPuttableHands(self.turn.flip().stone()))
+#         if restHand <= self.completeReadingThreshold:
+#             beginTime = time.time()
+#             p = self.originalPlayer.makeSearcher().eval(board, restHand, self.turn, NumStoneEvaluator(self.turn)).getPosition()
+#             endTime = time.time()
+#             print("reading time = " + (endTime - beginTime) + "[s]")
 
-        return v if currentTurn == self.turn else -v
+#         return self.originalPlayer.play(board)
 
 def main():
     board = Board()
     board.setup()
     turn = Turn.FIRST
     hasPassed = False
-    firstPlayer = SimpleAIPlayer(Turn.FIRST)
-    secondPlayer = AlphaBetaMinMaxAIPlayer(Turn.SECOND, 5)
+    firstPlayer = NegaScoutAIPlayer(Turn.FIRST, 3)
+    secondPlayer = NegaScoutBoardScoreAIPlayer(Turn.SECOND, 5)
 
     while True:
         board.show()
@@ -410,5 +565,7 @@ def main():
 
     print('BLACK = ' + str(board.countStone(Stone.BLACK)))
     print('WHITE = ' + str(board.countStone(Stone.WHITE)))
+
+main()
 
 
