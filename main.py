@@ -1,5 +1,6 @@
 from enum import Enum
 import copy
+import random
 import time
 
 class Stone(Enum):
@@ -33,6 +34,9 @@ class Position():
 
     def equals(self, p):
         return self.x == p.x and self.y == p.y
+    
+    def __str__(self):
+        return "(" + str(self.x) + ", " + str(self.y) + ")"
 
 class Board():
     WIDTH = 8
@@ -156,8 +160,8 @@ class Board():
         return [self.get(x, i + 1) for i in range(self.HEIGHT)]
 
 class Turn(Enum):
-    FIRST = -1
-    SECOND = 1
+    BLACK = -1
+    WHITE = 1
 
     def flip(self):
         return Turn(self.value * -1)
@@ -477,11 +481,12 @@ class NegaScoutSearcher():
         puttablePositions = board.findPuttableHands(currentTurn.stone())
 
         if len(puttablePositions) == 0:
+            print("uo")
             score = -self.eval(board, restDepth - 1, currentTurn.flip(), evaluator, -beta, -alpha).getScore()
-            return EvalResult(score, None)
+            return EvalResult(score, 0)
         
         maxScore = -float('inf')
-        selectedPosition = None
+        selectedPosition = 1.1
 
         for p in puttablePositions:
             b = board.clone()
@@ -534,38 +539,154 @@ class NegaScoutAIPlayer(AbstractAIPlayer):
 #             print("reading time = " + (endTime - beginTime) + "[s]")
 
 #         return self.originalPlayer.play(board)
+    
+class Winner(Enum):
+    BLACK = -1
+    WHITE = 1
+    TIE = 0
+
+    def __str__(self):
+        if self.value == self.BLACK.value:
+            return "BLACK"
+        if self.value == self.WHITE.value:
+            return "WHITE"
+        if self.value == self.TIE.value:
+            return "TIE"
+
+class Game():
+    def play(self, blackPlayer, whitePlayer, board, turn, verbose):
+        hasPassed = False
+
+        while True:
+            if verbose:
+                board.show()
+            
+            if not board.isPuttableSomewhere(turn.stone()):
+                if hasPassed:
+                    break
+
+                hasPassed = True
+                turn = turn.flip()
+                continue
+
+            print(board.findPuttableHands(turn.stone())[0])
+            hasPassed = False
+            p = blackPlayer.play(board) if turn == Turn.BLACK else whitePlayer.play(board)
+
+            board.put(p.x, p.y, turn.stone())
+            turn = turn.flip()
+
+        blackStoneCount = board.countStone(Stone.BLACK)
+        whiteStoneCount = board.countStone(Stone.WHITE)
+
+        if verbose:
+            board.show()
+            print("BLACK = " + str(blackStoneCount))
+            print("WHITE = " + str(whiteStoneCount))
+
+        if blackStoneCount > whiteStoneCount:
+            return Winner.BLACK
+        elif blackStoneCount < whiteStoneCount:
+            return Winner.WHITE
+        else:
+            return Winner.TIE
+        
+class RandomPlayer(Player):
+    def __init__(self, turn):
+        self.turn = turn
+
+    def play(self, board):
+        while True:
+            x = random.randrange(Board.WIDTH) + 1
+            y = random.randrange(Board.HEIGHT) + 1
+            if not board.isPuttable(x, y, self.turn.stone()):
+                continue
+
+            return Position(x, y)
+        
+class EvalWinRate():
+    GAME_COUNT = 10
+    
+    @staticmethod
+    def main():
+        blackPlayer = SimpleMonteCarloPlayer(Turn.BLACK, 10)
+        whitePlayer = NegaScoutAIPlayer(Turn.WHITE, 5)
+
+        black = 0; white = 0; tie = 0
+
+        game = Game()
+        for i in range(EvalWinRate.GAME_COUNT):
+            board = Board()
+            board.setup()
+            winner = game.play(blackPlayer, whitePlayer, board, Turn.BLACK, False)
+
+            if winner == Winner.BLACK:
+                black += 1
+            elif winner == Winner.WHITE:
+                white += 1
+            elif winner == Winner.TIE:
+                tie += 1
+            else:
+                print("Unknown winner.")
+
+            print("winner: " + str(winner) + " (at " + str(i + 1) + ")")
+
+        print("BLACK: " + type(blackPlayer).__name__)
+        print("WHITE: " + type(whitePlayer).__name__)
+        print("black: " + str(black / EvalWinRate.GAME_COUNT))
+        print("white: " + str(white / EvalWinRate.GAME_COUNT))
+        print("tie: " + str(tie / EvalWinRate.GAME_COUNT))
+
+class SimpleMonteCarloPlayer(Player):
+    def __init__(self, turn, playoutCount):
+        self.turn = turn
+        self.playoutCount = playoutCount
+
+    def play(self, board):
+        start = time.time()
+        maxRate = -1
+        maxPosition = None
+        for y in range(1, Board.HEIGHT + 1):
+            for x in range(1, Board.WIDTH + 1):
+                if not board.isPuttable(x, y, self.turn.stone()):
+                    continue
+                rate = self.playout(x, y, board)
+                if rate > maxRate:
+                    maxRate = rate
+                    maxPosition = Position(x, y)
+
+        end = time.time()
+        print("play duration: " + str(end - start))
+        return maxPosition
+
+    def playout(self, x, y, board):
+        blackPlayer = RandomPlayer(Turn.BLACK)
+        whitePlayer = RandomPlayer(Turn.WHITE)
+
+        nextBoard = board.clone()
+        nextBoard.put(x, y, self.turn.stone())
+
+        win = 0
+        game = Game()
+        for count in range(0, self.playoutCount):
+            winner = game.play(blackPlayer, whitePlayer, nextBoard.clone(), self.turn.flip(), False)
+            if self.turn == Turn.BLACK and winner == Winner.BLACK or self.turn == Turn.WHITE and winner == Winner.WHITE:
+                win += 1
+
+        return win / self.playoutCount
 
 def main():
+    blackPlayer = NegaScoutBoardScoreAIPlayer(Turn.WHITE, 5)
+    whitePlayer = SimpleMonteCarloPlayer(Turn.BLACK, 20)
+
+    game = Game()
     board = Board()
     board.setup()
-    turn = Turn.FIRST
-    hasPassed = False
-    firstPlayer = NegaScoutAIPlayer(Turn.FIRST, 3)
-    secondPlayer = NegaScoutBoardScoreAIPlayer(Turn.SECOND, 5)
+    winner = game.play(blackPlayer, whitePlayer, board, Turn.BLACK, True)
 
-    while True:
-        board.show()
-
-        if not board.isPuttableSomewhere(turn.stone()):
-            if hasPassed:
-                break
-            hasPassed = True
-            turn = turn.flip()
-            continue
-
-        hasPassed = False
-        p = Position(0, 0)
-        if turn == Turn.FIRST:
-            p = firstPlayer.play(board)
-        else:
-            p = secondPlayer.play(board)
-
-        board.put(p.x, p.y, turn.stone())
-        turn = turn.flip()
-
-    print('BLACK = ' + str(board.countStone(Stone.BLACK)))
-    print('WHITE = ' + str(board.countStone(Stone.WHITE)))
+    print('BLACK = ' + type(blackPlayer).__name__)
+    print('WHITE = ' + type(whitePlayer).__name__)
+    print("Winner: " + str(winner))
 
 main()
-
-
+# EvalWinRate.main()
